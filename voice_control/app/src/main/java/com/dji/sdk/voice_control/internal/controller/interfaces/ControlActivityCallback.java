@@ -53,6 +53,8 @@ public interface ControlActivityCallback {
 
     float gerAltitude();
 
+    int getBatteryPercent();
+
     int getTextsureViewWidth();
 
     int getTextsureViewHeight();

@@ -97,6 +97,7 @@ import com.amap.api.maps2d.model.BitmapDescriptorFactory;
 import com.amap.api.maps2d.model.MarkerOptions;
 import com.amap.apis.utils.core.api.AMapUtilCoreApi;
 import com.dji.sdk.voice_control.R;
+import com.dji.sdk.voice_control.BuildConfig;
 import com.dji.sdk.voice_control.internal.controller.adapter.ChatListAdapter;
 import com.dji.sdk.voice_control.internal.controller.djitool.DownloadActivity;
 import com.dji.sdk.voice_control.internal.controller.djitool.LiveStream;
@@ -111,6 +112,7 @@ import com.dji.sdk.voice_control.internal.controller.chatgpt.ChatMessageData;
 import com.dji.sdk.voice_control.internal.controller.chatgpt.Constant;
 import com.dji.sdk.voice_control.internal.controller.chatgpt.GPTS;
 import com.dji.sdk.voice_control.internal.controller.flightcontrol.agent.llm_agent_cycle;
+import com.dji.sdk.voice_control.internal.controller.openclaw.DjiOpenClawAgent;
 import com.dji.sdk.voice_control.internal.controller.interfaces.IChatMessageData;
 import com.dji.sdk.voice_control.internal.controller.interfaces.IJSONMessage;
 import com.dji.sdk.voice_control.internal.controller.chatgpt.JSONMessage;
@@ -277,7 +279,7 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
     //Battery 电池状态
     BatteryView mBatteryView;
     private TextView mBatteryData;
-    private int mBatteryPercent;
+    private int mBatteryPercent = -1;
 
     private TextView mTextView;
 
@@ -464,13 +466,7 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
 
     //region agent 数据结构
     // 构造 GPTS 实例
-    private GPTS gpts = new GPTS(
-            "sk-AQoUM4UNCS4B9ozs3c7764DbC7Ec4a8487F8719a03DaB650", // 请填入实际的 API Key
-            "gpt-4o",
-            0.8f,
-            0.9f,
-            300
-    );
+    private GPTS gpts;
     private static final String AGENT_URL = "http://122.207.106.69:25130/chat";
     private static final String TEMPLATE="Please answer the following question: {question}";
     private static final String IMAGE_FILE_NAME = "frame.jpg";
@@ -483,6 +479,7 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
     llm_agent_cycle llmAgentCycle;
     llm_active_track llmActiveTrack;
     TargetCollectionAgent targetCollectionAgent;
+    DjiOpenClawAgent openClawAgent;
     private boolean isflying = false;
     //endregion
 
@@ -682,6 +679,7 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
         // Initialize all agent instances
         // 初始化命令交互控制器
         mCI = CommandInterpreter.getUniqueInstance(mContext);
+        openClawAgent = new DjiOpenClawAgent(mCI, this, gimbalControl);
         
         // Initialize network client for yoloSamTrack
         networkClient = new NetworkClient();
@@ -763,6 +761,7 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
         mChatMessageData = ChatMessageData.getInstance();
         mJSONMessage = JSONMessage.getInstance();
         initAdpater();
+        initLlmClient();
 
         //注册广播器
         IntentFilter filter = new IntentFilter();
@@ -820,6 +819,9 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
         // Cleanup llm_active_track
         if (llmActiveTrack != null) {
             llmActiveTrack.cleanup();
+        }
+        if (openClawAgent != null) {
+            openClawAgent.shutdown();
         }
         
         super.onDestroy();
@@ -1185,8 +1187,12 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
                 public void onClick(DialogInterface dialog, int which) {
                     String targetObjectType = input.getText().toString().trim();
                     if (!targetObjectType.isEmpty()) {
-                        llmAgentCycle.setTargetObjectType(targetObjectType);
-                        llmAgentCycle.agentFindTarget();
+                        if (gpts == null) {
+                            showToast("请先在 local.properties 配置 OPENAI_API_KEY");
+                            return;
+                        }
+                        openClawAgent.start("搜索并靠近目标：" + targetObjectType
+                                + "。保持安全距离，确认目标后拍照并报告，完成后悬停等待人工指令。");
                     } else {
                         showToast("目标物体类型不能为空");
                     }
@@ -1230,13 +1236,15 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
         });
         llm_agent_fixed.setOnClickListener(v -> {
 //            llmAgentCycle.agentFindCar();
-            llmAgentCycle.hotFlyCircle(5);
+            if (llmAgentCycle != null) llmAgentCycle.hotFlyCircle(5);
+            else showToast("旧版固定流程未启用，请使用 OpenClaw Agent");
         });
         test_control.setOnClickListener(v -> {
             showSimpleMoveDialog();
         });
         stop_cycle.setOnClickListener(v -> {
-            llmAgentCycle.stopHotpointMission();
+            if (llmAgentCycle != null) llmAgentCycle.stopHotpointMission();
+            if (openClawAgent != null) openClawAgent.stop();
         });
         LocationSave.setOnClickListener(v -> {
             depthEstimation.captureCurrentPoseAsync("current");
@@ -1251,7 +1259,8 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
             mCI.mStop();
         });
         stop_agent_button.setOnClickListener(v -> {
-            llmAgentCycle.stopAllOperations();
+            if (openClawAgent != null) openClawAgent.stop();
+            if (llmAgentCycle != null) llmAgentCycle.stopAllOperations();
         });
         set_home_current.setOnClickListener(v ->{
            if(mCI.mFlightController!=null){
@@ -1877,6 +1886,11 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
             Log.e(TAG, "Error getting altitude: " + e.getMessage());
         }
         return 0.0f;
+    }
+
+    @Override
+    public int getBatteryPercent() {
+        return mBatteryPercent;
     }
     //endregion
 
@@ -2853,6 +2867,10 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
      */
     public String sendQuestionToGPTSync(String question, File file, boolean isHistory) throws Exception {
 
+        if (gpts == null) {
+            throw new IllegalStateException("LLM 未配置。请在 local.properties 中设置 OPENAI_API_KEY");
+        }
+
         // 同步请求
         String result = gpts.chatSync(
                 question,
@@ -2862,6 +2880,22 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
         );
 
         return result;
+    }
+
+    /** 从未纳入版本控制的 local.properties 初始化 LLM，避免把密钥提交到源码仓库。 */
+    private void initLlmClient() {
+        if (BuildConfig.OPENAI_API_KEY == null || BuildConfig.OPENAI_API_KEY.trim().isEmpty()) {
+            Log.w(TAG, "OPENAI_API_KEY is not configured; AI agent remains disabled");
+            gpts = null;
+            return;
+        }
+        try {
+            gpts = new GPTS(BuildConfig.OPENAI_API_KEY, BuildConfig.OPENAI_MODEL, 0.3f, 0.9f, 500);
+            gpts.setAttr("url", BuildConfig.OPENAI_BASE_URL);
+        } catch (Exception error) {
+            Log.e(TAG, "Unable to initialize LLM client", error);
+            gpts = null;
+        }
     }
 
 
@@ -2897,8 +2931,13 @@ public class ControlActivity extends AppCompatActivity implements OnMapClickList
         } else if (command.contains("修改地址")){
             handleModiferurl();
         } else if (command.contains("自动搜索")){
-//            agentFindCar();
-            llmAgent.agentFindCar();
+            String target = command.replace("自动搜索", "").trim();
+            if (target.isEmpty()) target = "指定目标";
+            if (openClawAgent != null && gpts != null) {
+                openClawAgent.start("搜索目标：" + target + "。发现后拍照、报告并悬停。");
+            } else {
+                addChatMessage(Constant.OWNER_BOT, "OpenClaw Agent 未就绪，请检查 LLM 配置");
+            }
         } else if (command.contains("俯视图")){
             gimbalControl.rotateGimbalDownwardView();
             addChatMessage(Constant.OWNER_BOT,"切换俯视图");

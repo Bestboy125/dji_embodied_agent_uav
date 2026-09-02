@@ -4,6 +4,8 @@ An embodied-agent UAV system for interaction tasks
 
 An Android ground station built on DJI Mobile SDK (MSDK V4). The drone is treated as a physical body for embodied intelligence: the camera is the “eye,” the propellers are the “legs.” The phone app handles motion control via MSDK (the cerebellum); cloud LLMs / VLMs and on-device vision foundation models handle cognition and decision-making (the brain). Together they close the **perceive — decide — control** loop.
 
+The current version adds an **OpenClaw-style agent runtime**. The LLM neither emits raw DJI commands nor blindly executes a complete plan. Each turn may select exactly one registered skill; deterministic safety checks run before DJI MSDK receives the action, and the result, current aircraft state, and FPV frame are fed into the next turn.
+
 <p align="center">
   <img src="fig/closeto.gif" width="46%"/>
   &nbsp;
@@ -37,6 +39,22 @@ Two interaction modes:
 
 - **Human–UAV**: voice / text commands, with manual takeover in emergencies.
 - **Self-interaction**: the UAV loops through observe — reason — act with the environment and keeps a replayable task trajectory.
+
+### OpenClaw Closed-Loop Runtime
+
+```text
+Voice/text goal
+  → observe aircraft state and FPV
+  → LLM selects one skill using a strict JSON protocol
+  → SkillRegistry validates capability
+  → SafetyPolicy validates connection, flight state, battery, and bounds
+  → DJI skill adapter invokes MSDK / Virtual Stick / Gimbal
+  → normalized SkillResult enters bounded working memory
+  → observe again
+  → done / stuck / operator stop / iteration limit
+```
+
+The runtime executes at most one skill per turn, never treats malformed model output as success, blocks repeated blind actions, and routes operator stop, lifecycle shutdown, and runtime errors through one motion-stop path. The current catalog contains `observe`, `takeoff`, `land`, `hover`, `move_relative`, `rotate`, `gimbal_pitch`, `capture_photo`, and `report`.
 
 ## Core Capabilities
 
@@ -113,14 +131,41 @@ The GIFs above show target approach and confirmation of the voice command “tur
 
 1. Clone this repo and open `voice_control/` in Android Studio.
 2. Put your own DJI `com.dji.sdk.API_KEY` and Amap `com.amap.api.v2.apikey` in `voice_control/app/src/main/AndroidManifest.xml` (do not use sample values in the repo).
-3. Configure the LLM and iFLYTEK keys in the app settings or the corresponding constants.
-4. The first launch needs the internet for MSDK registration. After that, connect the remote controller over USB; if the UI shows aircraft status, the link is up.
+3. Configure the LLM in the untracked `voice_control/local.properties` file:
+
+   ```properties
+   OPENAI_API_KEY=your-api-key
+   OPENAI_MODEL=gpt-4o
+   OPENAI_BASE_URL=https://api.openai.com/v1/chat/completions
+   # Only required for the DashScope/Qwen VLM path
+   DASHSCOPE_API_KEY=your-dashscope-key
+   DASHSCOPE_MODEL=qwen-vl-plus
+   ```
+
+   Compatible Chat Completions endpoints may replace the model and URL. These development values are compiled into the APK; production deployments should use a signed backend proxy instead of distributing a long-lived provider key.
+4. Configure the iFLYTEK AppID and other speech-service parameters.
+5. The first launch needs the internet for MSDK registration. After that, connect the remote controller over USB; if the UI shows aircraft status, the link is up.
 
 ### Flight
 
 Before outdoor takeoff, make sure diagnostics are empty (compass / magnetic issues require recalibration or a different site). After a voice or text command, a confirmation dialog appears; only “confirm execution” sends the action to the flight controller. In an emergency, take over with the remote controller immediately.
 
 > **Safety**: This project sends real flight-control commands. Fly only in legal airspace, follow local regulations, and keep visual line of sight and the ability to take over manually.
+
+### Using the OpenClaw Agent
+
+1. Confirm the aircraft link and FPV feed, and validate in a simulator or propeller-off setup first.
+2. Tap the agent button and enter a target such as “red vehicle.”
+3. The chat view reports each decision, selected skill, and normalized result.
+4. Text or voice commands beginning with “自动搜索” use the same runtime.
+5. Use the stop-agent button and remote controller immediately if behavior is unexpected. Completed missions hold position by default.
+
+Build and test with JDK 11:
+
+```powershell
+cd voice_control
+./gradlew.bat :app:testDebugUnitTest :app:assembleDebug
+```
 
 ## Repository Layout
 
@@ -130,6 +175,7 @@ Before outdoor takeoff, make sure diagnostics are empty (compass / magnetic issu
 ├── voice_control/                # Android project
 │   └── app/src/main/java/.../internal/
 │       ├── controller/           # Link, flight control, speech, chat UI
+│       │   └── openclaw/          # Closed loop, skill registry, safety, DJI adapter
 │       ├── prompt/               # Task-decomposition / VLM prompts
 │       └── ...
 ├── docs/                         # DJI MSDK API docs
@@ -140,8 +186,11 @@ Main implementations:
 
 - Low-level flight control: `internal/controller/flightcontrol/`
 - Embodied task agent: `internal/controller/flightcontrol/agent/`
+- OpenClaw runtime: `internal/controller/openclaw/`
 - Prompts: `internal/prompt/`
 - On-device YOLO: `internal/controller/yolo/`
+
+The legacy `llm_agent*` and `TargetCollectionAgent` implementations remain for experiment reproduction and incremental migration. The main target-search entry now uses the new runtime.
 
 ## Citation
 

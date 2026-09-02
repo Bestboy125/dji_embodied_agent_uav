@@ -71,8 +71,8 @@ public class GPTS {
         if (this.apiKey == null || this.apiKey.isEmpty()) {
             throw new IllegalArgumentException("API Key is missing!");
         }
-        if (!supportedModelNames.contains(modelName)) {
-            throw new IllegalArgumentException("Model name should be one of " + supportedModelNames.toString());
+        if (modelName == null || modelName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Model name is missing!");
         }
         this.modelName = modelName;
         this.temperature = temperature;
@@ -108,6 +108,9 @@ public class GPTS {
                 break;
             case "maxRetries":
                 this.maxRetries = (int) value;
+                break;
+            case "url":
+                this.url = (String) value;
                 break;
             default:
                 throw new NoSuchFieldException("Field '" + name + "' does not exist.");
@@ -269,10 +272,6 @@ public class GPTS {
      * 处理图像文件
      */
     private void processImageFiles(Object imageFiles, JSONArray userContent) throws Exception {
-        if (!modelName.contains("gpt-4")) {
-            throw new IllegalArgumentException("Image input is only supported for GPT-4 models.");
-        }
-
         String[] imagesArr;
         if (imageFiles instanceof String) {
             imagesArr = new String[]{(String) imageFiles};

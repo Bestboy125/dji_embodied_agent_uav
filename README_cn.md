@@ -4,6 +4,8 @@
 
 基于大疆 Mobile SDK（MSDK V4）二次开发的 Android 地面站，将无人机作为具身智能的物理载体：镜头作为“眼睛”观测环境，螺旋桨作为“腿脚”执行运动。手机端 APP 通过 MSDK 承担运动控制（小脑），云端 LLM / VLM 与端侧视觉基础模型承担认知决策（大脑），形成 **感知 — 决策 — 控制** 闭环。
 
+当前版本引入了 **OpenClaw 风格的 Agent Runtime**：LLM 不再直接拼接中文飞控命令，也不会一次性盲目执行整条计划。系统在每一轮只允许模型选择一个注册技能，动作经过确定性安全策略检查后才进入 DJI MSDK；执行结果、最新飞行状态和 FPV 画面会回到下一轮决策。
+
  
 
 *左：目标靠近与信息收集  |  右：语音指令确认与执行*
@@ -28,6 +30,33 @@
 
 - **人机交互**：语音 / 文本下达指令，紧急情况下人工介入接管。
 - **自我交互**：无人机按「观测 — 推理 — 动作」与环境循环交互，形成可回溯的任务轨迹。
+
+### OpenClaw 闭环运行时
+
+新的默认智能体链路为：
+
+```text
+语音/文字目标
+  → ObservationProvider 读取连接、飞行状态、位置、航向、高度和 FPV
+  → LLM 按严格 JSON 协议选择一个 Skill
+  → SkillRegistry 检查技能是否真实存在
+  → SafetyPolicy 检查连接、空地状态、电量和动作幅度
+  → DJI Skill Adapter 调用 MSDK / Virtual Stick / Gimbal
+  → SkillResult 写入有限工作记忆
+  → 下一轮重新观察和决策
+  → done / stuck / 人工停止 / 达到迭代上限
+```
+
+核心约束：
+
+- 每轮最多执行一个技能，LLM 不直接接触 MSDK 对象。
+- 未注册技能、地面位移、过大单步动作和低电量关键动作会被拒绝。
+- 同一非观测动作连续两次后必须重新观察，避免无反馈重复控制。
+- LLM 连续三次返回非法 JSON 时任务按失败结束并悬停，绝不会当作成功。
+- `stop_agent_button`、Activity 销毁和运行时异常都会进入统一停止路径。
+- 最近任务结果保存在 Android `SharedPreferences`，作为下一次任务的轻量经验。
+
+当前注册的硬技能包括 `observe`、`takeoff`、`land`、`hover`、`move_relative`、`rotate`、`gimbal_pitch`、`capture_photo` 和 `report`。添加新能力时实现 `AgentSkill` 并注册即可，不需要修改 Agent 主循环。
 
 ## 核心能力
 
@@ -109,14 +138,41 @@ Android APP（`voice_control/`）基于 DJI MSDK 4.18，主要模块：
 
 1. 克隆本仓库，用 Android Studio 打开 `voice_control/`。
 2. 在 `voice_control/app/src/main/AndroidManifest.xml` 中填入你自己的 DJI `com.dji.sdk.API_KEY` 与高德 `com.amap.api.v2.apikey`（请勿使用仓库里的示例值）。
-3. 在 APP 设置或对应常量类中配置大模型与讯飞密钥。
-4. 首次运行需联网完成 MSDK 注册；之后用 USB 连接遥控器，界面能读到飞行器状态即表示连接成功。
+3. 在 `voice_control/local.properties` 中配置大模型。该文件默认不纳入 Git：
+
+   ```properties
+   OPENAI_API_KEY=your-api-key
+   OPENAI_MODEL=gpt-4o
+   OPENAI_BASE_URL=https://api.openai.com/v1/chat/completions
+   # 仅使用百炼/Qwen VLM 时填写
+   DASHSCOPE_API_KEY=your-dashscope-key
+   DASHSCOPE_MODEL=qwen-vl-plus
+   ```
+
+   兼容 OpenAI Chat Completions 的服务可以替换模型和地址。开发配置会被编译进 APK，正式部署建议改为自有后端签名代理，不要在客户端分发长期有效的云端密钥。
+4. 配置科大讯飞 AppID 等语音服务参数。
+5. 首次运行需联网完成 MSDK 注册；之后用 USB 连接遥控器，界面能读到飞行器状态即表示连接成功。
 
 ### 飞行
 
 室外起飞前确认诊断信息为空（罗盘 / 磁场异常需重新标定或换场地）。语音或文本下发指令后，系统会弹出确认框，回复「确认执行」才会向飞控发送动作。紧急情况请立即用遥控器接管。
 
 > **安全**：本项目会向真实无人机下发飞控指令。请在合法空域、遵守当地法规、保持目视与人工接管能力的前提下使用。
+
+### 使用 OpenClaw Agent
+
+1. 确认飞控已连接、FPV 可见，并先在模拟器或桨叶拆除环境验证。
+2. 点击主界面的“智能体”按钮，输入目标类型，例如“红色车辆”。
+3. 界面会逐轮显示 Agent 判断、所选技能和标准化执行结果。
+4. “自动搜索 + 目标”语音/文字命令也会进入同一闭环运行时。
+5. 任何异常立即点击“停止智能体”并用遥控器接管。任务完成后默认悬停，不会由 LLM 自行扩大任务范围。
+
+本地构建与单元测试建议使用 JDK 11：
+
+```powershell
+cd voice_control
+./gradlew.bat :app:testDebugUnitTest :app:assembleDebug
+```
 
 ## 目录结构
 
@@ -126,6 +182,7 @@ Android APP（`voice_control/`）基于 DJI MSDK 4.18，主要模块：
 ├── voice_control/                # Android 工程
 │   └── app/src/main/java/.../internal/
 │       ├── controller/           # 连接、飞控、语音、对话主界面
+│       │   └── openclaw/          # 单动作闭环、技能注册、安全策略、DJI 适配
 │       ├── prompt/               # 任务分解 / VLM 提示词
 │       └── ...
 ├── docs/                         # DJI MSDK API 文档
@@ -136,8 +193,20 @@ Android APP（`voice_control/`）基于 DJI MSDK 4.18，主要模块：
 
 - 低层次飞控：`internal/controller/flightcontrol/`
 - 具身任务智能体：`internal/controller/flightcontrol/agent/`
+- OpenClaw 闭环运行时：`internal/controller/openclaw/`
 - 提示词：`internal/prompt/`
 - 端侧 YOLO：`internal/controller/yolo/`
+
+OpenClaw 目录中的主要职责：
+
+- `OpenClawAgentRuntime`：观察—单步决策—执行—反馈状态机。
+- `AgentDecision`：严格解析 `act / done / stuck`，拒绝模糊文本动作。
+- `SkillRegistry` / `AgentSkill`：可发现、可扩展的能力协议。
+- `SafetyPolicy`：独立于 LLM 的确定性飞行安全门。
+- `AgentMemory`：最近动作和结果的有限上下文。
+- `DjiOpenClawAgent`：把抽象技能映射到现有 MSDK、虚拟摇杆、云台和 UI 回调。
+
+旧的 `llm_agent*`、`TargetCollectionAgent` 仍保留，便于复现实验和逐步迁移；主界面的目标搜索入口已切换到新运行时。
 
 ## 引用
 
@@ -162,4 +231,3 @@ Android APP（`voice_control/`）基于 DJI MSDK 4.18，主要模块：
 - 本仓库在 DJI Android SDK Sample 上二次开发。DJI Mobile SDK 遵循 [DJI EULA](http://developer.dji.com/policies/eula/)。
 - Sample 代码部分遵循 MIT License，详见 `LICENSE.txt`。
 - 请自行申请并妥善保管第三方 API Key，不要将密钥提交到公开仓库。
-

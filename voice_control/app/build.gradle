@@ -2,6 +2,16 @@ apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 apply plugin: 'kotlin-kapt'
 
+def localSecrets = new Properties()
+def localSecretsFile = rootProject.file('local.properties')
+if (localSecretsFile.exists()) {
+    localSecretsFile.withInputStream { localSecrets.load(it) }
+}
+def buildConfigString = { String key, String fallback = '' ->
+    def value = localSecrets.getProperty(key, fallback)
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+}
+
 repositories {
     mavenLocal()
     flatDir {
@@ -20,6 +30,11 @@ android {
         targetSdkVersion 33
         multiDexEnabled true
         versionCode 1
+        buildConfigField "String", "OPENAI_API_KEY", buildConfigString('OPENAI_API_KEY')
+        buildConfigField "String", "OPENAI_MODEL", buildConfigString('OPENAI_MODEL', 'gpt-4o')
+        buildConfigField "String", "OPENAI_BASE_URL", buildConfigString('OPENAI_BASE_URL', 'https://api.openai.com/v1/chat/completions')
+        buildConfigField "String", "DASHSCOPE_API_KEY", buildConfigString('DASHSCOPE_API_KEY')
+        buildConfigField "String", "DASHSCOPE_MODEL", buildConfigString('DASHSCOPE_MODEL', 'qwen-vl-plus')
         ndk {
             // On x86 devices that run Android API 23 or above, if the application is targeted with API 23 or
             // above, FFmpeg lib might lead to runtime crashes or warnings.
@@ -49,6 +64,7 @@ android {
 
     buildFeatures {
         viewBinding true
+        buildConfig true
     }
 
     dexOptions {
@@ -210,7 +226,9 @@ dependencies {
     testImplementation "org.powermock:powermock-api-mockito2:1.7.1" // 这个mockito2必须引入，否则的话会找不到PowerMockito类
     testImplementation "org.powermock:powermock-module-junit4:1.7.1"
     testImplementation 'org.powermock:powermock-core:1.7.1'
-    testImplementation "org.mockito:mockito-core:5.+"
+    // Keep Mockito/Byte Buddy compatible with the legacy AGP 7.1 Jetifier toolchain.
+    testImplementation "org.mockito:mockito-core:4.11.0"
+    testImplementation 'org.json:json:20240303'
     // testImplementation "org.powermock:powermock-module-junit4-rule:1.7.1"
     // testImplementation "org.powermock:powermock-classloading-xstream:1.7.1"
 

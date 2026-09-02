@@ -2,6 +2,7 @@ package com.dji.sdk.voice_control.internal.controller.chatgpt;// dashscope SDK�
 import java.util.*;
 
 import com.alibaba.dashscope.common.Role;
+import com.dji.sdk.voice_control.BuildConfig;
 import com.alibaba.dashscope.exception.ApiException;
 import com.alibaba.dashscope.exception.NoApiKeyException;
 import io.reactivex.Flowable;
@@ -84,11 +85,12 @@ public class ChatGPTClient {
     }
     
     public static MultiModalConversationParam buildMultiModalConversationParam(MultiModalMessage Msg)  {
+        if (BuildConfig.DASHSCOPE_API_KEY == null || BuildConfig.DASHSCOPE_API_KEY.trim().isEmpty()) {
+            throw new IllegalStateException("DASHSCOPE_API_KEY is not configured in local.properties");
+        }
         return MultiModalConversationParam.builder()
-                // 若没有配置环境变量，请用百炼API Key将下行替换为：.apiKey("sk-xxx")
-                .apiKey("sk-f0014e0ab0804090a5b46434b3e1c9df")
-                // 此处以 qvq-max 为例，可按需更换模型名称
-                .model("qwen-vl-plus")
+                .apiKey(BuildConfig.DASHSCOPE_API_KEY)
+                .model(BuildConfig.DASHSCOPE_MODEL)
                 .messages(Arrays.asList(Msg))
                 .incrementalOutput(true)
                 .build();
